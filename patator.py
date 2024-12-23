@@ -18,13 +18,13 @@ __email__   = 'patator@hsc.fr'
 __url__     = 'http://www.hsc.fr/ressources/outils/patator/'
 __git__     = 'https://github.com/lanjelot/patator'
 __twitter__ = 'https://twitter.com/lanjelot'
-__version__ = '1.1-dev'
+__version__ = '1.0'
 __license__ = 'GPLv2'
 __pyver__   = '%d.%d.%d' % sys.version_info[0:3]
 __banner__  = 'Patator %s (%s) with python-%s' % (__version__, __git__, __pyver__)
 
 # README {{{
-'''
+r'''
 INTRODUCTION
 ------------
 
@@ -972,8 +972,10 @@ import signal
 import ctypes
 import glob
 from xml.sax.saxutils import escape as xmlescape, quoteattr as xmlquoteattr
-from ssl import SSLContext
 from binascii import hexlify, unhexlify
+import ssl
+from socket import socket
+from typing import Optional, Union
 
 PY3 = sys.version_info >= (3,)
 
@@ -1057,6 +1059,34 @@ if sys.platform.startswith('win'):
 from multiprocessing.managers import SyncManager
 
 # }}}
+
+def create_ssl_socket(sock: Union[socket, None] = None, 
+                     hostname: Optional[str] = None,
+                     **kwargs) -> ssl.SSLSocket:
+    """
+    Modern replacement for deprecated ssl.wrap_socket()
+    
+    Args:
+        sock: Existing socket to wrap, or None to create new one
+        hostname: Server hostname for verification
+        **kwargs: Additional SSL context parameters
+    
+    Returns:
+        SSLSocket: Secured socket connection
+    """
+    context = ssl.create_default_context()
+    
+    # Apply any custom SSL options
+    for key, value in kwargs.items():
+        if hasattr(context, key):
+            setattr(context, key, value)
+            
+    if sock is None:
+        sock = socket()
+        
+    if hostname:
+        return context.wrap_socket(sock, server_hostname=hostname)
+    return context.wrap_socket(sock)
 
 # utils {{{
 def expand_path(s):
@@ -2238,7 +2268,7 @@ Please read the README inside for more examples and usage information.
 
       else:
         i, _, _ = select([sys.stdin], [], [], .1)
-        if not i or not sys.stdin.isatty():
+        if not i:
           return None
         command = i[0].readline().strip()
 
@@ -2671,7 +2701,7 @@ class Telnet_login(TCP_Cache):
     ('host', 'target host'),
     ('port', 'target port [23]'),
     ('inputs', 'list of values to input'),
-    ('prompt_re', 'regular expression to match prompts [\w+:]'),
+    ('prompt_re', r'regular expression to match prompts [\w+:]'),
     ('timeout', 'seconds to wait for a response and for prompt_re to match received data [20]'),
     )
   available_options += TCP_Cache.available_options
@@ -2684,7 +2714,7 @@ class Telnet_login(TCP_Cache):
 
     return TCP_Connection(fp)
 
-  def execute(self, host, port='23', inputs=None, prompt_re='\w+:', timeout='20', persistent='0'):
+  def execute(self, host, port='23', inputs=None, prompt_re: str=r'\w+:', timeout='20', persistent='0'):
 
     with Timing() as timing:
       fp, _ = self.bind(host, port, timeout=timeout)
@@ -2927,10 +2957,8 @@ class Finger_lookup:
 
 # DCOM {{{
 try:
-  from impacket.dcerpc.v5 import transport
-  from impacket.uuid import uuidtup_to_bin
-  from impacket.dcerpc.v5.rpcrt import RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_AUTHN_LEVEL_NONE, RPC_C_AUTHN_WINNT, DCERPCException, rpc_status_codes
-  from impacket.dcerpc.v5.ndr import NDRCALL
+  from impacket.dcerpc.v5.dcomrt import DCOMConnection
+  from impacket.dcerpc.v5.dcom import wmi
 except ImportError:
   notfound.append('impacket')
 
@@ -2938,53 +2966,28 @@ class DCOM_login:
   '''Brute-force DCOM'''
 
   usage_hints = (
-    """%prog host=10.0.0.1 port=49667 uuid=12345678-1234-ABCD-EF00-0123456789AB ver=1.0 user='admin' password=FILE0 0=passwords.txt (authtype=0/9/10/14/16/68/255 authlevel=1/2/3/4/5/6)""",
+    """%prog host=10.0.0.1 user='admin' password=FILE0 0=passwords.txt""",
     )
 
   available_options = (
     ('host', 'target host'),
-    ('port', 'target port'),
-    ('uuid', 'UUID of RPC interface'),
-    ('ver', 'version of RPC interface'),
-    ('opnum', 'opnum of RPC interface'),
-    ('syntax', 'transfer syntax of RPC interface'),
-    ('domain', 'domains to test'),
     ('user', 'usernames to test'),
     ('password', 'passwords to test'),
-    ('lmhash', 'LM-hash to test'),
-    ('nthash', 'NT-hash to test'),
-    ('aeskey', 'AES-hash to test'),
-    ('tgt', 'TGT-ticket to test'),
-    ('tgs', 'TGS-ticket to test'),
-    ('authtype', 'auth type (security provider)'),
-    ('authlevel', 'auth level'),
+    ('domain', 'domains to test'),
     )
   available_actions = ()
 
   Response = Response_Base
 
-  def execute(self, host, port, uuid, ver, opnum='0', syntax='8a885d04-1ceb-11c9-9fe8-08002b104860:2.0', domain='', user='', password='', lmhash='', nthash='', aeskey=None, tgt=None, tgs=None, authtype=RPC_C_AUTHN_WINNT, authlevel=RPC_C_AUTHN_LEVEL_PKT_PRIVACY):
-    stringBinding = r'ncacn_ip_tcp:%s[%s]' % (host,port)
-    rpctransport = transport.DCERPCTransportFactory(stringBinding)
-    dce = rpctransport.get_dce_rpc()
-    dce.set_auth_type(int(authtype))
-    if user or password or lmhash or nthash or aeskey or tgt or tgs:
-      dce.set_credentials(user, password, domain, lmhash, nthash, aeskey, tgt, tgs)
-      dce.set_auth_level(int(authlevel))
-    else:
-      dce.set_auth_level(RPC_C_AUTHN_LEVEL_NONE)
-    timing = 0
+  def execute(self, host, user='', password='', domain=''):
+    dcom = DCOMConnection(host, user, password, domain)
     try:
-      dce.connect()
       with Timing() as timing:
-        dce.bind(uuidtup_to_bin((uuid,ver)), transfer_syntax=syntax.split(":"))
-        dce.call(int(opnum), NDRCALL())
-        res = dce.recv()
-        code, mesg = 0, 'none'
-    except DCERPCException as e:
-      mesg = e.error_string
-      code = [key for key, val in rpc_status_codes.items() if val == mesg][0] if [key for key, val in rpc_status_codes.items() if val == mesg] else -1
-    dce.disconnect()
+        iInterface = dcom.CoCreateInstanceEx(wmi.CLSID_WbemLevel1Login,wmi.IID_IWbemLevel1Login)
+        code, mesg = 0, 'OK'
+    except Exception as e:
+      code, mesg = 1, e.error_string
+    dcom.disconnect()
     return self.Response(code, mesg, timing)
 
 # }}}
@@ -3385,7 +3388,7 @@ class Rlogin_login(TCP_Cache):
     ('luser', 'client username [root]'),
     ('user', 'usernames to test'),
     ('password', 'passwords to test'),
-    ('prompt_re', 'regular expression to match prompts [\w+:]'),
+    ('prompt_re', r'regular expression to match prompts [\w+:]'),
     ('timeout', 'seconds to wait for a response and for prompt_re to match received data [10]'),
     )
   available_options += TCP_Cache.available_options
@@ -3407,7 +3410,7 @@ class Rlogin_login(TCP_Cache):
 
     return TCP_Connection(fp)
 
-  def execute(self, host, port='513', luser='root', user='', password=None, prompt_re='\w+:', timeout='10', persistent='0'):
+  def execute(self, host, port='513', luser='root', user='', password=None, prompt_re=r'\w+:', timeout='10', persistent='0'):
 
     fp, _ = self.bind(host, port, timeout=int(timeout))
 
@@ -3451,7 +3454,7 @@ class LineReceiver:
     banner = self.getresp()
 
     if ssl:
-      self.sock = SSLContext().wrap_socket(sock=self.sock)
+      self.sock = create_ssl_socket(self.sock)
 
     return banner # welcome banner
 
@@ -4270,7 +4273,7 @@ class RDP_login:
 
   def execute(self, host, port='3389', user=None, password=None):
 
-    cmd = ['xfreerdp', '/v:%s:%d' % (host, int(port)), '/u:%s' % user, '/p:%s' % password, '/cert:ignore', '/tls-seclevel:0', '+auth-only', '/sec:nla', '/log-level:error']
+    cmd = ['xfreerdp', '/v:%s:%d' % (host, int(port)), '/u:%s' % user, '/p:%s' % password, '/cert:ignore', '/tls:seclevel:0', '+auth-only', '/sec:nla', '/log-level:error']
 
     with Timing() as timing:
       p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -4278,7 +4281,7 @@ class RDP_login:
       code = p.returncode
 
     mesg = []
-    m = re.search(' Authentication only, exit status (\d+)', err)
+    m = re.search(r' Authentication only, exit status (\d+)', err)
     if m:
       mesg.append(('exit', m.group(1)))
     m = re.search(' (ERR.+?) ', err)
@@ -4995,7 +4998,11 @@ class IKE_enum:
 
     has_sa = 'SA=(' in out
     if has_sa:
-      mesg = 'Handshake returned: %s (%s)' % (re.search('SA=\((.+) LifeType', out).group(1), re.search('\t(.+) Mode Handshake returned', out).group(1))
+      mesg = 'Handshake returned: %s (%s)' % (
+        re.search(r'SA=\((.+?) LifeType', out).group(1),
+        re.search(r'\t(.+?) Mode Handshake returned', out).group(1)
+      )
+
     else:
       try:
         mesg = out.strip().split('\n')[1].split('\t')[-1]
@@ -5178,7 +5185,7 @@ class TCP_fuzz:
   def execute(self, host, port, data='', timeout='2', ssl='0'):
     fp = socket.create_connection((host, port), int(timeout))
     if ssl != '0':
-      fp = SSLContext().wrap_socket(sock=fp)
+      fp = create_ssl_socket(fp)
     fp.send(unhexlify(data))
     #fp.send(b(data))
     with Timing() as timing:
